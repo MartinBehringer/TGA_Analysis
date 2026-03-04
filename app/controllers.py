@@ -8,7 +8,7 @@ No heavy math here - that's in processing.py.
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import pandas as pd
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -22,7 +22,7 @@ from app.ui_main_window import MainWindow
 from app.io_parsers import load_tga_file
 from app.processing import (
     compute_dtg, smooth_series, normalize_mass_at_40,
-    calculate_mass_loss, WINDOW_PTS
+    calculate_mass_loss, WINDOW_PTS, _find_nearest_index
 )
 from app.plotting import plot_overview, plot_detail, get_disambiguated_names
 from app.logging_setup import get_logger, append_calculation_log
@@ -83,6 +83,7 @@ class AppController(QObject):
         w.dtg_smoothing_changed.connect(self._on_dtg_smoothing_changed)
         w.tg_smoothing_changed.connect(self._on_tg_smoothing_changed)
         w.overlay_raw_changed.connect(self._on_overlay_raw_changed)
+        w.slope_window_preview_changed.connect(self._on_slope_window_preview_changed)
 
         # Calculation series
         w.calc_use_series_changed.connect(self._on_calc_use_series_changed)
@@ -107,6 +108,9 @@ class AppController(QObject):
         # Raw data
         w.include_derived_changed.connect(self._on_include_derived_changed)
         w.raw_data_curve_combo.currentIndexChanged.connect(self._on_raw_data_curve_changed)
+
+        # Multi-monitor rescale
+        w.screen_changed.connect(self._on_screen_changed)
     
     def _refresh_ui(self):
         """Refresh all UI elements based on current state."""
@@ -273,6 +277,23 @@ class AppController(QObject):
         logger.debug("Overlay raw: %s", checked)
         self._update_plot()
 
+    def _on_slope_window_preview_changed(self, checked: bool):
+        """Handle slope-window preview toggle."""
+        self.state.show_slope_window_preview = checked
+        logger.debug("Slope-window preview: %s", checked)
+        self._update_plot()
+
+    def _on_screen_changed(self):
+        """Handle window moved to a different monitor – redraw plots with new scale."""
+        from app.scaling import sf
+        logger.info("Screen changed – new scale factor: %.2f", sf())
+        self._update_plot()
+        # Re-draw detail plot if one is active
+        if self.state.calc_results:
+            row = self.window.results_table.currentRow()
+            if 0 <= row < len(self.state.calc_results):
+                self._update_detail_plot(self.state.calc_results[row])
+
     def _on_calc_use_series_changed(self, series: str):
         """Handle global calculation series change."""
         self.state.calc_use_series = UseSeries.SMOOTHED_TG if series == "Smoothed TG" else UseSeries.RAW_TG
@@ -285,6 +306,111 @@ class AppController(QObject):
         self.state.marsh_turning_fraction = turning_fraction
         logger.debug("Marsh params: window_pts_left=%d, window_pts_right=%d, turning_fraction=%.2f", 
                     window_pts_left, window_pts_right, turning_fraction)
+        if self.state.show_slope_window_preview:
+            self._update_plot()
+
+    def _build_slope_window_overlay(self) -> Optional[Dict[str, Any]]:
+        """Build x-ranges for slope-window overlay on the overview plot."""
+        if not self.state.show_slope_window_preview:
+            return None
+
+        ranges = self.window.get_ranges_data()
+        if not ranges:
+            return None
+
+        selected_row = self.window.get_selected_range_row()
+        range_candidates: List[Dict[str, Any]] = []
+
+        # Priority: selected Tangential-Marsh row -> any Tangential-Marsh row -> selected row -> first valid row
+        if selected_row >= 0:
+            selected = next((r for r in ranges if r.get('row') == selected_row), None)
+            if selected and selected.get('method') == 'Tangential-Marsh':
+                range_candidates.append(selected)
+
+        range_candidates.extend(
+            r for r in ranges
+            if r.get('method') == 'Tangential-Marsh' and r not in range_candidates
+        )
+
+        if selected_row >= 0:
+            selected = next((r for r in ranges if r.get('row') == selected_row), None)
+            if selected and selected not in range_candidates:
+                range_candidates.append(selected)
+
+        range_candidates.extend(r for r in ranges if r not in range_candidates)
+
+        selected_range = None
+        for r in range_candidates:
+            curve_index = r.get('curve_index')
+            if isinstance(curve_index, int) and 0 <= curve_index < len(self.state.curves):
+                selected_range = r
+                break
+
+        if selected_range is None:
+            return None
+
+        curve = self.state.curves[selected_range['curve_index']]
+        temp = curve.raw_df['Temp_C'].values
+        x_vals = curve.raw_df['Temp_C'].values if self.state.x_axis_mode == XAxisMode.TEMPERATURE else curve.raw_df['Time_min'].values
+
+        if len(temp) == 0 or len(x_vals) != len(temp):
+            return None
+
+        idx_start = _find_nearest_index(temp, selected_range['start_temp'])
+        idx_end = _find_nearest_index(temp, selected_range['end_temp'])
+
+        if idx_start > idx_end:
+            idx_start, idx_end = idx_end, idx_start
+
+        def _window_bounds(center_idx: int, window_pts: int) -> Tuple[float, float]:
+            lo_idx = max(0, center_idx - window_pts)
+            hi_idx = min(len(x_vals) - 1, center_idx + window_pts)
+            x_lo = float(x_vals[lo_idx])
+            x_hi = float(x_vals[hi_idx])
+            return (min(x_lo, x_hi), max(x_lo, x_hi))
+
+        left_min, left_max = _window_bounds(idx_start, self.state.calc_window_pts_left)
+        right_min, right_max = _window_bounds(idx_end, self.state.calc_window_pts_right)
+
+        return {
+            'left': (left_min, left_max),
+            'right': (right_min, right_max),
+        }
+
+    def _build_detail_slope_window_overlay(
+        self, curve, result: CalcResult
+    ) -> Optional[Dict[str, Any]]:
+        """Build slope-window overlay for the detail plot (always in temperature space)."""
+        if not self.state.show_slope_window_preview:
+            return None
+
+        temp = curve.raw_df['Temp_C'].values
+        if len(temp) == 0:
+            return None
+
+        idx_start = result.params.get(
+            'idx_start', _find_nearest_index(temp, result.start_temp)
+        )
+        idx_end = result.params.get(
+            'idx_end', _find_nearest_index(temp, result.end_temp)
+        )
+
+        wl = result.params.get('window_pts_left', self.state.calc_window_pts_left)
+        wr = result.params.get('window_pts_right', self.state.calc_window_pts_right)
+
+        def _window_bounds(center_idx: int, window_pts: int) -> Tuple[float, float]:
+            lo = max(0, center_idx - window_pts)
+            hi = min(len(temp) - 1, center_idx + window_pts)
+            return (min(float(temp[lo]), float(temp[hi])),
+                    max(float(temp[lo]), float(temp[hi])))
+
+        left_min, left_max = _window_bounds(idx_start, wl)
+        right_min, right_max = _window_bounds(idx_end, wr)
+
+        return {
+            'left': (left_min, left_max),
+            'right': (right_min, right_max),
+        }
     
     # =========================================================================
     # Plotting
@@ -294,12 +420,14 @@ class AppController(QObject):
         """Update the overview plot."""
         selected_curves = self.state.get_selected_curves()
         display_names = get_disambiguated_names(selected_curves)
+        slope_window_overlay = self._build_slope_window_overlay()
         
         plot_overview(
             self.window.overview_figure,
             selected_curves,
             self.state,
-            display_names
+            display_names,
+            slope_window_overlay=slope_window_overlay
         )
         self.window.overview_canvas.draw()
     
@@ -324,9 +452,11 @@ class AppController(QObject):
             pass
 
         # Store context for popup rebuild
-        self.window.set_detail_context(curve, result)
-        
-        plot_detail(self.window.detail_figure, curve, result)
+        slope_overlay = self._build_detail_slope_window_overlay(curve, result)
+        self.window.set_detail_context(curve, result, slope_overlay)
+
+        plot_detail(self.window.detail_figure, curve, result,
+                    slope_window_overlay=slope_overlay)
         self.window.detail_canvas.draw()
     
     # =========================================================================
@@ -513,6 +643,9 @@ class AppController(QObject):
 
     def _on_range_selected(self, row: int):
         """Show detail plot for the selected range row (if calculated)."""
+        if self.state.show_slope_window_preview:
+            self._update_plot()
+
         result_index = self._range_result_index.get(row)
         if result_index is None or result_index >= len(self.state.calc_results):
             return
@@ -734,6 +867,7 @@ class AppController(QObject):
                     'show_dtg': self.state.show_dtg,
                     'normalize_at_40': self.state.normalize_at_40,
                     'overlay_raw': self.state.overlay_raw,
+                    'show_slope_window_preview': self.state.show_slope_window_preview,
                     'calc_use_series': self.state.calc_use_series.value,
                     'calc_window_pts_left': self.state.calc_window_pts_left,
                     'calc_window_pts_right': self.state.calc_window_pts_right,
@@ -817,6 +951,7 @@ class AppController(QObject):
             self.state.show_dtg = settings.get('show_dtg', True)
             self.state.normalize_at_40 = settings.get('normalize_at_40', False)
             self.state.overlay_raw = settings.get('overlay_raw', False)
+            self.state.show_slope_window_preview = settings.get('show_slope_window_preview', False)
             self.state.calc_use_series = UseSeries(settings.get('calc_use_series', 'Raw TG'))
             self.state.calc_window_pts_left = settings.get('calc_window_pts_left', 30)
             self.state.calc_window_pts_right = settings.get('calc_window_pts_right', 30)
@@ -966,6 +1101,7 @@ class AppController(QObject):
         w.xaxis_time_radio.blockSignals(True)
         w.normalize_checkbox.blockSignals(True)
         w.overlay_raw_checkbox.blockSignals(True)
+        w.btn_show_slope_window.blockSignals(True)
         w.calc_series_combo.blockSignals(True)
         w.calc_window_pts_left_spin.blockSignals(True)
         w.calc_window_pts_right_spin.blockSignals(True)
@@ -984,6 +1120,7 @@ class AppController(QObject):
         w.xaxis_time_radio.setChecked(self.state.x_axis_mode == XAxisMode.TIME)
         w.normalize_checkbox.setChecked(self.state.normalize_at_40)
         w.overlay_raw_checkbox.setChecked(self.state.overlay_raw)
+        w.btn_show_slope_window.setChecked(self.state.show_slope_window_preview)
         w.calc_series_combo.setCurrentText(self.state.calc_use_series.value)
         w.calc_window_pts_left_spin.setValue(self.state.calc_window_pts_left)
         w.calc_window_pts_right_spin.setValue(self.state.calc_window_pts_right)
@@ -1004,6 +1141,7 @@ class AppController(QObject):
         w.xaxis_time_radio.blockSignals(False)
         w.normalize_checkbox.blockSignals(False)
         w.overlay_raw_checkbox.blockSignals(False)
+        w.btn_show_slope_window.blockSignals(False)
         w.calc_series_combo.blockSignals(False)
         w.calc_window_pts_left_spin.blockSignals(False)
         w.calc_window_pts_right_spin.blockSignals(False)

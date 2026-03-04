@@ -184,6 +184,7 @@ class AppState:
     dtg_smoothing: SmoothingParams = field(default_factory=lambda: SmoothingParams(enabled=True, window=201, poly=3))
     tg_smoothing: SmoothingParams = field(default_factory=lambda: SmoothingParams(enabled=False, window=201, poly=3))
     overlay_raw: bool = False
+    show_slope_window_preview: bool = False
     calc_use_series: UseSeries = UseSeries.RAW_TG
     calc_window_pts_left: int = 30
     calc_window_pts_right: int = 30

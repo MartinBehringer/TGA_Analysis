@@ -19,6 +19,7 @@ from app.processing import (
     WINDOW_PTS, _find_nearest_index
 )
 from app.logging_setup import get_logger
+from app.scaling import scaled_font_pt
 
 logger = get_logger('plotting')
 
@@ -82,7 +83,8 @@ def plot_overview(
     fig: Figure,
     curves: List[CurveData],
     state: AppState,
-    display_names: Optional[List[str]] = None
+    display_names: Optional[List[str]] = None,
+    slope_window_overlay: Optional[Dict[str, Tuple[float, float]]] = None
 ) -> None:
     """
     Plot overview of multiple TG/DTG curves.
@@ -234,8 +236,17 @@ def plot_overview(
     
     # Single legend for all curves, positioned center right
     if legend_handles:
-        legend = ax.legend(legend_handles, legend_labels, loc='center right', fontsize=9,
+        legend = ax.legend(legend_handles, legend_labels, loc='center right', fontsize=scaled_font_pt(9),
                           facecolor='#ffffff', edgecolor='#e5e5e7', labelcolor='#1d1d1f')
+
+    # Optional slope-window preview (transparent bands)
+    if slope_window_overlay:
+        left_window = slope_window_overlay.get('left')
+        right_window = slope_window_overlay.get('right')
+        if left_window is not None:
+            ax.axvspan(left_window[0], left_window[1], color=COLORS[0], alpha=0.14, zorder=0)
+        if right_window is not None:
+            ax.axvspan(right_window[0], right_window[1], color=COLORS[1], alpha=0.14, zorder=0)
     
     ax.grid(True, alpha=0.5, color='#e5e5e7')
     apply_figure_style(fig)
@@ -250,7 +261,8 @@ def plot_detail(
     curve: CurveData,
     result: CalcResult,
     buffer: float = DETAIL_BUFFER,
-    full_range: bool = False
+    full_range: bool = False,
+    slope_window_overlay: Optional[Dict[str, Tuple[float, float]]] = None
 ) -> None:
     """
     Plot detailed view of a mass-loss calculation result.
@@ -333,8 +345,17 @@ def plot_detail(
     ax.set_xlabel("Temperature (°C)")
     ax.set_ylabel("Mass (%)")
     ax.set_title(f"{method.value}: ΔY = {delta_y:.3f}%", color='#1d1d1f', fontweight='bold')
-    ax.legend(loc='best', fontsize=9, facecolor='#ffffff', edgecolor='#e5e5e7', labelcolor='#1d1d1f')
+    ax.legend(loc='best', fontsize=scaled_font_pt(9), facecolor='#ffffff', edgecolor='#e5e5e7', labelcolor='#1d1d1f')
     ax.grid(True, alpha=0.5, color='#e5e5e7')
+
+    # Optional slope-window preview (transparent bands)
+    if slope_window_overlay:
+        left_window = slope_window_overlay.get('left')
+        right_window = slope_window_overlay.get('right')
+        if left_window is not None:
+            ax.axvspan(left_window[0], left_window[1], color=COLORS[0], alpha=0.14, zorder=0)
+        if right_window is not None:
+            ax.axvspan(right_window[0], right_window[1], color=COLORS[1], alpha=0.14, zorder=0)
     
     apply_figure_style(fig)
     fig.tight_layout()
@@ -371,7 +392,7 @@ def _plot_stepwise_detail(
     # Label
     y_mid = (mass_start + mass_end) / 2
     ax.text(t_mid + 5, y_mid, f'ΔY = {delta_y:.2f}%', 
-            fontsize=11, color='#af52de', fontweight='bold')
+            fontsize=scaled_font_pt(11), color='#af52de', fontweight='bold')
 
 
 def _plot_software_detail(
@@ -416,12 +437,12 @@ def _plot_software_detail(
     # Label
     y_label = (y1_mid + y2_mid) / 2
     ax.text(t_mid + 5, y_label, f'ΔY = {delta_y:.2f}%',
-            fontsize=11, color='#af52de', fontweight='bold')
+            fontsize=scaled_font_pt(11), color='#af52de', fontweight='bold')
     
     # Show slope info
     slope_chosen = params.get('slope_chosen', 'unknown')
     ax.text(0.02, 0.98, f'Slope: {m:.6f} %/°C ({slope_chosen})',
-            transform=ax.transAxes, fontsize=9, va='top', color='#1d1d1f',
+            transform=ax.transAxes, fontsize=scaled_font_pt(9), va='top', color='#1d1d1f',
             bbox=dict(boxstyle='round', facecolor='#ffffff', edgecolor='#e5e5e7', alpha=0.9))
 
 
@@ -476,10 +497,10 @@ def _plot_marsh_detail(
     # Label
     y_label = (y1_at_turn + y2_at_turn) / 2
     ax.text(turning_temp + 5, y_label, f'ΔY = {delta_y:.2f}%',
-            fontsize=11, color='#af52de', fontweight='bold')
+            fontsize=scaled_font_pt(11), color='#af52de', fontweight='bold')
     
     # Show parameters
     info_text = f'T_turn = {turning_temp:.1f}°C\nm1 = {m1:.6f}\nm2 = {m2:.6f}'
     ax.text(0.02, 0.98, info_text,
-            transform=ax.transAxes, fontsize=9, va='top', color='#1d1d1f',
+            transform=ax.transAxes, fontsize=scaled_font_pt(9), va='top', color='#1d1d1f',
             bbox=dict(boxstyle='round', facecolor='#ffffff', edgecolor='#e5e5e7', alpha=0.9))

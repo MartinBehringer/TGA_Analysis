@@ -1,0 +1,21 @@
+.venv/Scripts/Activate
+python -m app.main
+
+
+.exe bauen: 
+
+.\.venv\Scripts\Activate; python -m PyInstaller .\tga_tool.spec --noconfirm --clean
+
+git: 
+
+git init
+git add .
+git commit -m "commit"
+git branch -M main
+git push -u origin main
+
+auf mac: 
+
+pip install -r requirements.txt
+source .venv/bin/activate
+python -m app.main

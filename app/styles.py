@@ -737,12 +737,17 @@ FigureCanvas {
 def get_matplotlib_style():
     """
     Return matplotlib rcParams for a matching light theme.
+
+    Font-size values are scaled via the global UI scale factor so that
+    plot text matches the rest of the application on any screen size.
     """
+    from app.scaling import scaled_font_pt
+
     return {
         # Figure
         'figure.facecolor': '#ffffff',
         'figure.edgecolor': '#ffffff',
-        'figure.titlesize': 12,
+        'figure.titlesize': scaled_font_pt(12),
         'figure.titleweight': 'bold',
         
         # Axes
@@ -750,8 +755,8 @@ def get_matplotlib_style():
         'axes.edgecolor': '#d1d1d6',
         'axes.labelcolor': '#1d1d1f',
         'axes.titlecolor': '#1d1d1f',
-        'axes.titlesize': 11,
-        'axes.labelsize': 10,
+        'axes.titlesize': scaled_font_pt(11),
+        'axes.labelsize': scaled_font_pt(10),
         'axes.linewidth': 1,
         'axes.grid': True,
         'axes.axisbelow': True,
@@ -766,14 +771,14 @@ def get_matplotlib_style():
         # Ticks
         'xtick.color': '#86868b',
         'ytick.color': '#86868b',
-        'xtick.labelsize': 9,
-        'ytick.labelsize': 9,
+        'xtick.labelsize': scaled_font_pt(9),
+        'ytick.labelsize': scaled_font_pt(9),
         
         # Legend
         'legend.facecolor': '#ffffff',
         'legend.edgecolor': '#e5e5e7',
         'legend.labelcolor': '#1d1d1f',
-        'legend.fontsize': 9,
+        'legend.fontsize': scaled_font_pt(9),
         'legend.framealpha': 0.95,
         
         # Text

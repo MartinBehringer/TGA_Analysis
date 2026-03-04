@@ -19,6 +19,7 @@ from app.ui_main_window import MainWindow
 from app.controllers import AppController
 from app.logging_setup import setup_logging, get_logger
 from app.styles import MODERN_STYLESHEET, apply_matplotlib_style
+from app.scaling import compute_scale_factor, scale_stylesheet, scaled_font_pt
 
 
 def main():
@@ -38,10 +39,17 @@ def main():
     
     # Set base style and apply modern stylesheet
     app.setStyle('Fusion')
-    app.setStyleSheet(MODERN_STYLESHEET)
+
+    # Compute adaptive scale factor based on screen resolution
+    factor = compute_scale_factor(app)
+    logger = get_logger('main')
+    logger.info("Screen scale factor: %.2f", factor)
+
+    # Scale stylesheet pixel/font values to match current screen
+    app.setStyleSheet(scale_stylesheet(MODERN_STYLESHEET))
     
-    # Set default font
-    font = QFont('Segoe UI', 10)
+    # Set default font (scaled)
+    font = QFont('Segoe UI', scaled_font_pt(10))
     app.setFont(font)
     
     # Apply matplotlib theme

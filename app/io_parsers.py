@@ -15,9 +15,9 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView
+    QTableWidgetItem, QHeaderView, QSpinBox
 )
 from PyQt5.QtCore import Qt
 
@@ -74,10 +74,22 @@ class ColumnMappingDialog(QDialog):
     Dialog for manually mapping columns when automatic detection fails.
     """
     
-    def __init__(self, columns: List[str], sample_data: pd.DataFrame, parent=None):
+    def __init__(
+        self,
+        filepath: str,
+        sample_data: pd.DataFrame,
+        delimiter: str,
+        header_lines_skipped: int,
+        preview_rows: int,
+        parent=None
+    ):
         super().__init__(parent)
-        self.columns = columns
+        self.filepath = filepath
+        self.columns = list(sample_data.columns)
         self.sample_data = sample_data
+        self.delimiter = delimiter
+        self.header_lines_skipped = header_lines_skipped
+        self.preview_rows = preview_rows
         self.mapping = {}
         self._init_ui()
         
@@ -97,47 +109,61 @@ class ColumnMappingDialog(QDialog):
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
         
+        # Parsing options
+        options_group = QGroupBox("Parsing Options")
+        options_layout = QFormLayout(options_group)
+
+        self.delimiter_combo = QComboBox()
+        self.delimiter_combo.addItems(["Auto", ",", ";", "Tab"])
+        if self.delimiter == '\t':
+            self.delimiter_combo.setCurrentText("Tab")
+        elif self.delimiter in [",", ";"]:
+            self.delimiter_combo.setCurrentText(self.delimiter)
+        else:
+            self.delimiter_combo.setCurrentText("Auto")
+        options_layout.addRow("Delimiter:", self.delimiter_combo)
+
+        self.header_lines_spin = QSpinBox()
+        self.header_lines_spin.setRange(0, 500)
+        self.header_lines_spin.setValue(self.header_lines_skipped)
+        options_layout.addRow("Header lines to skip:", self.header_lines_spin)
+
+        self.preview_rows_spin = QSpinBox()
+        self.preview_rows_spin.setRange(5, 100)
+        self.preview_rows_spin.setValue(self.preview_rows)
+        options_layout.addRow("Preview rows:", self.preview_rows_spin)
+
+        layout.addWidget(options_group)
+
         # Preview table
-        preview_group = QGroupBox("Data Preview (first 5 rows)")
-        preview_layout = QVBoxLayout(preview_group)
-        
+        self.preview_group = QGroupBox()
+        preview_layout = QVBoxLayout(self.preview_group)
+
         self.preview_table = QTableWidget()
-        self.preview_table.setRowCount(min(5, len(self.sample_data)))
-        self.preview_table.setColumnCount(len(self.columns))
-        self.preview_table.setHorizontalHeaderLabels(self.columns)
-        
-        for i in range(min(5, len(self.sample_data))):
-            for j, col in enumerate(self.columns):
-                item = QTableWidgetItem(str(self.sample_data.iloc[i][col]))
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self.preview_table.setItem(i, j, item)
-        
         self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         preview_layout.addWidget(self.preview_table)
-        layout.addWidget(preview_group)
+        layout.addWidget(self.preview_group)
+
+        self.delimiter_combo.currentIndexChanged.connect(self._reload_preview)
+        self.header_lines_spin.valueChanged.connect(self._reload_preview)
+        self.preview_rows_spin.valueChanged.connect(self._reload_preview)
         
         # Mapping controls
         mapping_group = QGroupBox("Column Mapping")
         mapping_layout = QFormLayout(mapping_group)
         
-        none_option = ["(None)"] + self.columns
-        
         self.temp_combo = QComboBox()
-        self.temp_combo.addItems(none_option)
-        self._auto_select_combo(self.temp_combo, ['temp', 'temperature', 'temperatur'], ['c', '°c'])
         mapping_layout.addRow("Temperature (°C):", self.temp_combo)
-        
+
         self.time_combo = QComboBox()
-        self.time_combo.addItems(none_option)
-        self._auto_select_combo(self.time_combo, ['time', 'zeit', 't/'], ['min'])
         mapping_layout.addRow("Time (min):", self.time_combo)
-        
+
         self.mass_combo = QComboBox()
-        self.mass_combo.addItems(none_option)
-        self._auto_select_combo(self.mass_combo, ['mass', 'tg', 'masse', 'weight'], ['%', 'pct'])
         mapping_layout.addRow("Mass (%):", self.mass_combo)
         
         layout.addWidget(mapping_group)
+
+        self._reload_preview()
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -189,10 +215,91 @@ class ColumnMappingDialog(QDialog):
             mass_col: COL_MASS,
         }
         self.accept()
+
+    def _get_delimiter_override(self) -> Optional[str]:
+        choice = self.delimiter_combo.currentText()
+        if choice == "Auto":
+            return None
+        if choice == "Tab":
+            return '\t'
+        return choice
+
+    def _reload_preview(self):
+        if int(self.header_lines_spin.value()) == 0:
+            detected_header = _detect_header_line_index(self.filepath)
+            if detected_header:
+                self.header_lines_spin.blockSignals(True)
+                self.header_lines_spin.setValue(detected_header)
+                self.header_lines_spin.blockSignals(False)
+
+        self.header_lines_skipped = int(self.header_lines_spin.value())
+        self.preview_rows = int(self.preview_rows_spin.value())
+        delimiter_override = self._get_delimiter_override()
+
+        df = _read_preview_dataframe(
+            self.filepath,
+            nrows=self.preview_rows,
+            header_lines_skipped=self.header_lines_skipped,
+            delimiter_override=delimiter_override
+        )
+
+        if df is None or df.empty:
+            self.columns = []
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(0)
+            self.preview_group.setTitle("Data Preview (no data)")
+            self._refresh_mapping_combos()
+            return
+
+        self.sample_data = df
+        self.columns = list(df.columns)
+
+        self.preview_table.setRowCount(min(self.preview_rows, len(df)))
+        self.preview_table.setColumnCount(len(self.columns))
+        self.preview_table.setHorizontalHeaderLabels(self.columns)
+
+        for i in range(min(self.preview_rows, len(df))):
+            for j, col in enumerate(self.columns):
+                item = QTableWidgetItem(str(df.iloc[i][col]))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.preview_table.setItem(i, j, item)
+
+        self.preview_group.setTitle(f"Data Preview (first {min(self.preview_rows, len(df))} rows)")
+        self._refresh_mapping_combos()
+
+    def _refresh_mapping_combos(self):
+        none_option = ["(None)"] + self.columns
+
+        self.temp_combo.blockSignals(True)
+        self.time_combo.blockSignals(True)
+        self.mass_combo.blockSignals(True)
+
+        self.temp_combo.clear()
+        self.temp_combo.addItems(none_option)
+        self._auto_select_combo(self.temp_combo, ['temp', 'temperature', 'temperatur'], ['c', '°c'])
+
+        self.time_combo.clear()
+        self.time_combo.addItems(none_option)
+        self._auto_select_combo(self.time_combo, ['time', 'zeit', 't/'], ['min'])
+
+        self.mass_combo.clear()
+        self.mass_combo.addItems(none_option)
+        self._auto_select_combo(self.mass_combo, ['mass', 'tg', 'masse', 'weight'], ['%', 'pct'])
+
+        self.temp_combo.blockSignals(False)
+        self.time_combo.blockSignals(False)
+        self.mass_combo.blockSignals(False)
     
     def get_mapping(self) -> Dict[str, str]:
         """Get the column mapping."""
         return self.mapping
+
+    def get_parse_options(self) -> Dict[str, Optional[str]]:
+        """Get parsing options chosen by the user."""
+        return {
+            "header_lines_skipped": self.header_lines_skipped,
+            "delimiter_override": self._get_delimiter_override(),
+        }
 
 
 def _clean_column_name(col: str) -> str:
@@ -201,6 +308,87 @@ def _clean_column_name(col: str) -> str:
     if col.startswith('#'):
         col = col[1:].strip()
     return col
+
+
+def _detect_header_line_index(filepath: str, max_lines: int = 200) -> Optional[int]:
+    """Detect a likely column header line index in NETZSCH-like files."""
+    keywords_temp = ['temp', 'temperature', 'temperatur']
+    keywords_time = ['time', 'zeit', 't/']
+    keywords_mass = ['mass', 'tg', 'masse']
+
+    try:
+        with open(filepath, 'r', encoding='ISO-8859-1', errors='replace') as f:
+            for idx in range(max_lines):
+                line = f.readline()
+                if not line:
+                    break
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                candidate = stripped.lstrip('#').strip().lower()
+                if any(k in candidate for k in keywords_temp) and any(k in candidate for k in keywords_time) and any(k in candidate for k in keywords_mass):
+                    return idx
+    except Exception:
+        return None
+
+    return None
+
+
+def _sniff_delimiter(sample: str) -> str:
+    """Detect delimiter from a sample string."""
+    sniffer = csv.Sniffer()
+    try:
+        dialect = sniffer.sniff(sample, delimiters=',;\t')
+        return dialect.delimiter
+    except csv.Error:
+        return ','
+
+
+def _detect_delimiter(filepath: str, header_lines_skipped: int = 0) -> str:
+    """Detect delimiter from a file, optionally skipping header lines."""
+    effective_skip = header_lines_skipped
+    if effective_skip == 0:
+        detected_header = _detect_header_line_index(filepath)
+        if detected_header:
+            effective_skip = detected_header
+
+    with open(filepath, 'r', encoding='ISO-8859-1', errors='replace') as f:
+        for _ in range(effective_skip):
+            line = f.readline()
+            if not line:
+                break
+        sample = f.read(8192)
+    return _sniff_delimiter(sample)
+
+
+def _read_preview_dataframe(
+    filepath: str,
+    nrows: int = 10,
+    header_lines_skipped: int = 0,
+    delimiter_override: Optional[str] = None
+) -> Optional[pd.DataFrame]:
+    """Read a preview DataFrame with detected or overridden delimiter."""
+    try:
+        effective_skip = header_lines_skipped
+        if effective_skip == 0:
+            detected_header = _detect_header_line_index(filepath)
+            if detected_header:
+                effective_skip = detected_header
+
+        delimiter = delimiter_override or _detect_delimiter(filepath, effective_skip)
+        df = pd.read_csv(
+            filepath,
+            nrows=nrows,
+            sep=delimiter,
+            skiprows=effective_skip,
+            encoding='ISO-8859-1',
+            encoding_errors='replace',
+            on_bad_lines='skip'
+        )
+        df.columns = [_clean_column_name(c) for c in df.columns]
+        return df
+    except Exception:
+        return None
 
 
 def _find_column(df: pd.DataFrame, variants: List[str], contains_keywords: List[str] = None) -> Optional[str]:
@@ -362,7 +550,13 @@ def parse_netzsch(filepath: str) -> Tuple[Optional[CurveData], List[str]]:
         return None, [f"NETZSCH parsing failed: {str(e)}"]
 
 
-def parse_generic_csv(filepath: str, column_mapping: Dict[str, str] = None) -> Tuple[Optional[CurveData], List[str]]:
+def parse_generic_csv(
+    filepath: str,
+    column_mapping: Dict[str, str] = None,
+    header_lines_skipped: int = 0,
+    delimiter_override: Optional[str] = None,
+    decimal_override: Optional[str] = None
+) -> Tuple[Optional[CurveData], List[str]]:
     """
     Parse a generic CSV/TSV file.
     
@@ -381,29 +575,28 @@ def parse_generic_csv(filepath: str, column_mapping: Dict[str, str] = None) -> T
     logger.info("Parsing generic CSV: %s", filepath)
     
     try:
-        # Try to sniff the dialect
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            sample = f.read(8192)
-        
+        effective_skip = header_lines_skipped
+        if effective_skip == 0:
+            detected_header = _detect_header_line_index(filepath)
+            if detected_header:
+                effective_skip = detected_header
+
         # Detect delimiter
-        sniffer = csv.Sniffer()
-        try:
-            dialect = sniffer.sniff(sample, delimiters=',;\t')
-            delimiter = dialect.delimiter
-        except csv.Error:
-            # Default to comma
-            delimiter = ','
+        delimiter = delimiter_override or _detect_delimiter(filepath, effective_skip)
         
         logger.debug("Detected delimiter: %r", delimiter)
         
         # Try different decimal separators
-        for decimal in ['.', ',']:
+        decimal_candidates = [decimal_override] if decimal_override else ['.', ',']
+        for decimal in decimal_candidates:
             try:
                 df = pd.read_csv(
                     filepath,
                     sep=delimiter,
                     decimal=decimal,
+                    skiprows=effective_skip,
                     encoding='utf-8',
+                    encoding_errors='replace',
                     on_bad_lines='skip'
                 )
                 
@@ -469,12 +662,15 @@ def parse_generic_csv(filepath: str, column_mapping: Dict[str, str] = None) -> T
         # Capture header lines for display
         header_lines: List[str] = []
         try:
+            lines_to_read = max(50, effective_skip)
             with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                for _ in range(50):
+                for _ in range(lines_to_read):
                     line = f.readline()
                     if not line:
                         break
                     header_lines.append(line.rstrip('\n'))
+            if effective_skip > 0:
+                header_lines = header_lines[:effective_skip]
         except Exception:
             header_lines = []
 
@@ -483,7 +679,7 @@ def parse_generic_csv(filepath: str, column_mapping: Dict[str, str] = None) -> T
             encoding='utf-8',
             separator=delimiter,
             decimal=decimal,
-            header_lines_skipped=0,
+            header_lines_skipped=effective_skip,
             original_columns=original_columns,
             header_lines=header_lines,
         )
@@ -539,13 +735,30 @@ def load_tga_file(filepath: str, parent_widget=None) -> Tuple[Optional[CurveData
         
         # Read file for preview
         try:
-            df = pd.read_csv(filepath, nrows=10, encoding='utf-8', on_bad_lines='skip')
-            df.columns = [_clean_column_name(c) for c in df.columns]
-            
-            dialog = ColumnMappingDialog(list(df.columns), df, parent_widget)
+            preview_rows = 10
+            header_lines_skipped = 0
+            delimiter = _detect_delimiter(filepath, header_lines_skipped)
+            df = _read_preview_dataframe(
+                filepath,
+                nrows=preview_rows,
+                header_lines_skipped=header_lines_skipped,
+                delimiter_override=delimiter
+            )
+            if df is None:
+                raise ValueError("Preview read failed")
+
+            dialog = ColumnMappingDialog(
+                filepath,
+                df,
+                delimiter,
+                header_lines_skipped,
+                preview_rows,
+                parent_widget
+            )
             if dialog.exec_() == QDialog.Accepted:
                 mapping = dialog.get_mapping()
-                curve, warnings = parse_generic_csv(filepath, mapping)
+                parse_options = dialog.get_parse_options()
+                curve, warnings = parse_generic_csv(filepath, mapping, **parse_options)
                 all_warnings.extend(warnings)
                 
                 if curve is not None:
@@ -589,8 +802,7 @@ def get_sample_dataframe(filepath: str, nrows: int = 10) -> Optional[pd.DataFram
     
     # Try generic
     try:
-        df = pd.read_csv(filepath, nrows=nrows, encoding='utf-8', on_bad_lines='skip')
-        df.columns = [_clean_column_name(c) for c in df.columns]
+        df = _read_preview_dataframe(filepath, nrows=nrows, header_lines_skipped=0)
         return df
     except Exception:
         return None

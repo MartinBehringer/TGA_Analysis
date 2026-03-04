@@ -16,7 +16,9 @@ from PyQt5.QtWidgets import (
     QToolBox, QDialog
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QMoveEvent
+
+from app.scaling import scaled, scaled_f, scaled_font_pt, sf
 
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
     dtg_smoothing_changed = pyqtSignal(bool, int, int)
     tg_smoothing_changed = pyqtSignal(bool, int, int)
     overlay_raw_changed = pyqtSignal(bool)
+    slope_window_preview_changed = pyqtSignal(bool)
     range_add_requested = pyqtSignal()
     range_duplicate_requested = pyqtSignal()
     range_remove_requested = pyqtSignal()
@@ -98,17 +101,55 @@ class MainWindow(QMainWindow):
     load_config_requested = pyqtSignal()
     include_derived_changed = pyqtSignal(bool)
     filter_text_changed = pyqtSignal(str)
+    screen_changed = pyqtSignal()  # emitted when window moves to a different screen
     
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TGA Analysis Tool")
-        self.setMinimumSize(1300, 850)
-        self.resize(1500, 950)
+        self.setMinimumSize(scaled(1100), scaled(700))
+        self.resize(scaled(1500), scaled(950))
         self._detail_full_range = None
         self._detail_context = None
+        self._current_screen_name: str = ""
         
         self._setup_ui()
         self._connect_internal_signals()
+    
+    # ------------------------------------------------------------------
+    # Multi-monitor: detect when the window moves to a different screen
+    # ------------------------------------------------------------------
+
+    def moveEvent(self, event: QMoveEvent):
+        """Detect screen changes when the window is dragged between monitors."""
+        super().moveEvent(event)
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is None:
+                return
+            desktop = app.desktop()
+            screen_num = desktop.screenNumber(self)
+            screen_rect = desktop.availableGeometry(screen_num)
+            screen_key = f"{screen_rect.width()}x{screen_rect.height()}"
+            if self._current_screen_name and screen_key != self._current_screen_name:
+                # Screen changed – recompute scale and notify controller
+                from app.scaling import _recompute_for_screen
+                _recompute_for_screen(screen_rect)
+                self._apply_rescaled_stylesheet()
+                self.screen_changed.emit()
+            self._current_screen_name = screen_key
+        except Exception:
+            pass  # never crash on move
+
+    def _apply_rescaled_stylesheet(self):
+        """Re-apply the global stylesheet with new scale factor."""
+        from PyQt5.QtWidgets import QApplication
+        from app.styles import MODERN_STYLESHEET
+        from app.scaling import scale_stylesheet, scaled_font_pt
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(scale_stylesheet(MODERN_STYLESHEET))
+            app.setFont(QFont('Segoe UI', scaled_font_pt(10)))
     
     def _setup_ui(self):
         """Set up the complete UI layout."""
@@ -116,7 +157,7 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         central_layout = QVBoxLayout(central_widget)
-        central_layout.setContentsMargins(5, 5, 5, 5)
+        central_layout.setContentsMargins(scaled(5), scaled(5), scaled(5), scaled(5))
         
         self.main_splitter = QSplitter(Qt.Vertical)
         central_layout.addWidget(self.main_splitter)
@@ -128,7 +169,7 @@ class MainWindow(QMainWindow):
         self._setup_tab_widget()
         
         # Set splitter sizes (slightly more space for plot)
-        self.main_splitter.setSizes([520, 580])
+        self.main_splitter.setSizes([scaled(520), scaled(580)])
         
         # Right dock: Controls
         self._setup_controls_dock()
@@ -140,7 +181,7 @@ class MainWindow(QMainWindow):
         overview_layout.setContentsMargins(0, 0, 0, 0)
         
         # Matplotlib figure and canvas
-        self.overview_figure = Figure(figsize=(8, 5), dpi=100)
+        self.overview_figure = Figure(figsize=(scaled_f(8), scaled_f(5)), dpi=100)
         self.overview_canvas = FigureCanvas(self.overview_figure)
         self.overview_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
@@ -191,12 +232,12 @@ class MainWindow(QMainWindow):
             "Start Temp (°C)", "End Temp (°C)", "Method", "Curve", "ΔY (%)"
         ])
         self.ranges_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.ranges_table.verticalHeader().setDefaultSectionSize(36)
+        self.ranges_table.verticalHeader().setDefaultSectionSize(scaled(36))
         self.ranges_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.ranges_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.ranges_table.setStyleSheet(
-            "QTableWidget::item{padding:8px;}"
-            "QTableWidget QLineEdit{padding:4px 8px; border:1px solid #d1d1d6; border-radius:4px; min-height:22px;}"
+            f"QTableWidget::item{{padding:{scaled(8)}px;}}"
+            f"QTableWidget QLineEdit{{padding:{scaled(4)}px {scaled(8)}px; border:1px solid #d1d1d6; border-radius:{scaled(4)}px; min-height:{scaled(22)}px;}}"
         )
         self.ranges_table.itemChanged.connect(self._on_ranges_item_changed)
         ranges_group_layout.addWidget(self.ranges_table)
@@ -221,7 +262,7 @@ class MainWindow(QMainWindow):
         tables_splitter.addWidget(ranges_group)
 
         # Set splitter sizes
-        tables_splitter.setSizes([400])
+        tables_splitter.setSizes([scaled(400)])
         
         ranges_layout.addWidget(tables_splitter)
         
@@ -231,9 +272,9 @@ class MainWindow(QMainWindow):
         """Set up the Detail Plot tab."""
         detail_widget = QWidget()
         detail_layout = QVBoxLayout(detail_widget)
-        detail_layout.setContentsMargins(5, 5, 5, 5)
+        detail_layout.setContentsMargins(scaled(5), scaled(5), scaled(5), scaled(5))
         
-        self.detail_figure = Figure(figsize=(8, 5), dpi=100)
+        self.detail_figure = Figure(figsize=(scaled_f(8), scaled_f(5)), dpi=100)
         self.detail_canvas = FigureCanvas(self.detail_figure)
         self.detail_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.detail_toolbar = NavigationToolbar(self.detail_canvas, detail_widget)
@@ -290,7 +331,7 @@ class MainWindow(QMainWindow):
         options_layout = QHBoxLayout()
         options_layout.addWidget(QLabel("Viewing:"))
         self.raw_data_curve_combo = QComboBox()
-        self.raw_data_curve_combo.setMinimumWidth(200)
+        self.raw_data_curve_combo.setMinimumWidth(scaled(200))
         options_layout.addWidget(self.raw_data_curve_combo)
         
         self.include_derived_checkbox = QCheckBox("Include derived columns (dtg_raw, dtg_smooth, tg_smooth)")
@@ -314,14 +355,14 @@ class MainWindow(QMainWindow):
         top_layout = QHBoxLayout()
         top_layout.addWidget(QLabel("Curve:"))
         self.measurement_curve_combo = QComboBox()
-        self.measurement_curve_combo.setMinimumWidth(220)
+        self.measurement_curve_combo.setMinimumWidth(scaled(220))
         top_layout.addWidget(self.measurement_curve_combo)
         top_layout.addStretch()
         info_layout.addLayout(top_layout)
 
         self.measurement_info_text = QTextEdit()
         self.measurement_info_text.setReadOnly(True)
-        self.measurement_info_text.setFont(QFont("Consolas", 9))
+        self.measurement_info_text.setFont(QFont("Consolas", scaled_font_pt(9)))
         info_layout.addWidget(self.measurement_info_text)
 
         self.tab_widget.addTab(info_widget, "Measurement Info")
@@ -337,7 +378,7 @@ class MainWindow(QMainWindow):
         
         controls_widget = QWidget()
         controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setSpacing(10)
+        controls_layout.setSpacing(scaled(10))
         
         # File controls
         file_group = QGroupBox("Files")
@@ -363,7 +404,7 @@ class MainWindow(QMainWindow):
         # Curve list
         self.curve_list = QListWidget()
         self.curve_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.curve_list.setMinimumHeight(150)
+        self.curve_list.setMinimumHeight(scaled(150))
         file_layout.addWidget(self.curve_list)
         
         controls_layout.addWidget(file_group)
@@ -470,6 +511,13 @@ class MainWindow(QMainWindow):
         self.marsh_turning_frac_spin.setValue(50)
         marsh_layout.addRow("Turning temp (%):", self.marsh_turning_frac_spin)
 
+        self.btn_show_slope_window = QPushButton("Show slope window")
+        self.btn_show_slope_window.setCheckable(True)
+        self.btn_show_slope_window.setToolTip(
+            "Shade the slope-window regions on the overview plot for the selected range"
+        )
+        marsh_layout.addRow(self.btn_show_slope_window)
+
         accordion.addItem(marsh_page, "Tangential-Marsh")
 
         controls_layout.addWidget(accordion)
@@ -479,7 +527,7 @@ class MainWindow(QMainWindow):
         calc_series_layout.addWidget(QLabel("Calc series:"))
         self.calc_series_combo = QComboBox()
         self.calc_series_combo.addItems(["Raw TG", "Smoothed TG"])
-        self.calc_series_combo.setMinimumWidth(140)
+        self.calc_series_combo.setMinimumWidth(scaled(140))
         calc_series_layout.addWidget(self.calc_series_combo)
         controls_layout.addLayout(calc_series_layout)
         
@@ -520,9 +568,10 @@ class MainWindow(QMainWindow):
         if title == "Detail Plot" and self._detail_context is not None:
             # Rebuild detail plot with full curve range
             from app.plotting import plot_detail
-            curve, result = self._detail_context
+            curve, result, slope_overlay = self._detail_context
             fig_copy = Figure(figsize=fig.get_size_inches(), dpi=fig.dpi)
-            plot_detail(fig_copy, curve, result, full_range=True)
+            plot_detail(fig_copy, curve, result, full_range=True,
+                        slope_window_overlay=slope_overlay)
         else:
             try:
                 fig_copy = pickle.loads(pickle.dumps(fig))
@@ -534,7 +583,7 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
-        dialog.resize(1100, 750)
+        dialog.resize(scaled(1100), scaled(750))
 
         layout = QVBoxLayout(dialog)
         canvas = FigureCanvas(fig_copy)
@@ -557,9 +606,9 @@ class MainWindow(QMainWindow):
         except Exception:
             self._detail_full_range = None
 
-    def set_detail_context(self, curve, result) -> None:
+    def set_detail_context(self, curve, result, slope_overlay=None) -> None:
         """Store curve/result context for detail plot popup."""
-        self._detail_context = (curve, result)
+        self._detail_context = (curve, result, slope_overlay)
 
     def _apply_full_range(self, fig: Figure, title: str) -> None:
         """Apply full data range to axes in the popup figure."""
@@ -635,6 +684,7 @@ class MainWindow(QMainWindow):
         self.calc_window_pts_left_spin.valueChanged.connect(self._emit_marsh_params)
         self.calc_window_pts_right_spin.valueChanged.connect(self._emit_marsh_params)
         self.marsh_turning_frac_spin.valueChanged.connect(self._emit_marsh_params)
+        self.btn_show_slope_window.toggled.connect(self.slope_window_preview_changed.emit)
         
         # Ranges
         self.btn_add_range.clicked.connect(self.range_add_requested.emit)
@@ -886,7 +936,7 @@ class MainWindow(QMainWindow):
         """Add a new row to the ranges table."""
         row = self.ranges_table.rowCount()
         self.ranges_table.insertRow(row)
-        self.ranges_table.setRowHeight(row, 36)
+        self.ranges_table.setRowHeight(row, scaled(36))
         
         # Start temp
         start_item = QTableWidgetItem(str(start_temp))
@@ -900,12 +950,12 @@ class MainWindow(QMainWindow):
         method_combo = QComboBox()
         method_combo.addItems(["Stepwise", "Software", "Tangential-Marsh"])
         method_combo.setCurrentText(method)
-        method_combo.setMinimumHeight(28)
+        method_combo.setMinimumHeight(scaled(28))
         self.ranges_table.setCellWidget(row, 2, method_combo)
 
         # Curve combo
         curve_combo = QComboBox()
-        curve_combo.setMinimumHeight(28)
+        curve_combo.setMinimumHeight(scaled(28))
         curve_combo.addItem("Select curve", None)
         self.ranges_table.setCellWidget(row, 3, curve_combo)
 
