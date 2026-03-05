@@ -309,8 +309,8 @@ Check `./logs/app.log` for detailed error messages and stack traces.
 
 ## License
 
-[Specify your license here]
+Development Tool only - not for distribution.
 
 ## Contact
 
-[Specify contact information here]
+For questions or feedback, please contact the developer at martin.behringer@tum.de
