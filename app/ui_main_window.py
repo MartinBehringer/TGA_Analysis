@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QToolBox, QDialog
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QMoveEvent
+from PyQt5.QtGui import QFont, QMoveEvent, QValidator
 
 from app.scaling import scaled, scaled_f, scaled_font_pt, sf
 
@@ -48,7 +48,7 @@ class OddSpinBox(QSpinBox):
         try:
             val = int(text)
             if val % 2 == 0:
-                return (self.Intermediate, text, pos)
+                return (QValidator.Intermediate, text, pos)
         except ValueError:
             pass
         return result
